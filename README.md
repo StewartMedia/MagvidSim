@@ -1,2 +1,0 @@
-# MagvidSim
-Magvid Simulator
