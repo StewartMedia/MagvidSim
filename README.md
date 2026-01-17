@@ -39,7 +39,12 @@ pip install -r requirements.txt
 ### Basic Simulation
 ```bash
 source magvid_env/bin/activate
-python magvid_simulator.py
+python simulator.py
+```
+
+For headless/server environments (no display):
+```bash
+python simulator.py --no-display
 ```
 
 ### Configuration
@@ -71,13 +76,24 @@ To correlate with physical build:
 3. **Frequency response**: Test accumulation vs rotation rate
 4. **Particle detection**: Use ionized air or charged dust
 
-## Files Structure
+## Code Structure
 
-- `magvid_simulator.py` - Main simulation code
-- `config.ini` - Parameter configuration
+The simulator is organized into modular components:
+
+- `simulator.py` - Main entry point and orchestration
+- `config.py` - Configuration management with validation
+- `physics.py` - Electromagnetic field calculations and particle dynamics
+- `visualization.py` - 3D plotting and field visualization
+- `config.ini` - Parameter configuration file
 - `requirements.txt` - Python dependencies
 - `setup.sh` - Installation script
-- `README.md` - This file
+
+### Error Handling
+
+The simulator includes comprehensive error handling:
+- **Configuration validation**: Checks for missing files, invalid parameters, and physically unrealistic values
+- **Simulation error detection**: Catches numerical overflow, integration failures, and divergence
+- **Helpful error messages**: Clear descriptions of what went wrong and how to fix it
 
 ## References
 
