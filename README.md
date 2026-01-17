@@ -23,7 +23,7 @@ The interaction creates complex charged particle trajectories via the Lorentz fo
 
 Run the setup script:
 ```bash
-cd ~/coding/magvidsim
+cd ~/magvidsim
 ./setup.sh
 ```
 
