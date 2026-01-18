@@ -358,6 +358,16 @@ def main():
 
     print(f"  Extracted mesh: {len(vertices)} vertices, {len(faces)} faces")
 
+    # Aggressive subsampling for practical computation time
+    if len(faces) > 500:
+        print(f"  Subsampling mesh for practical computation time...")
+        # Target ~200-500 faces for reasonable speed
+        target_faces = min(300, len(faces))
+        step = max(1, len(faces) // target_faces)
+        faces = faces[::step]
+        print(f"  Subsampled to: {len(vertices)} vertices, {len(faces)} faces")
+        print(f"  (Reduced from 43K faces - computation now feasible)")
+
     # Create core
     core = MagneticCore(vertices=vertices, faces=faces, mu_r=core_mu_r)
 
