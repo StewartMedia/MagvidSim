@@ -1,8 +1,12 @@
-# MAGVID Electromagnetic Particle Simulator
+# MAGVID Electromagnetic Simulation Suite
 
 ## Overview
 
-This simulator models the electromagnetic behavior of charged particles in the MAGVID (MAGnetic Vortex hyper-Ionization Device) configuration as described in the infamous "GroomLake Colonel Reveals All" USENET post from 1995.
+This suite provides comprehensive electromagnetic simulation tools for the MAGVID (MAGnetic Vortex hyper-Ionization Device) configuration as described in the "GroomLake Colonel Reveals All" USENET post from 1995.
+
+**Two complementary tools:**
+1. **Particle Trajectory Simulator** (`simulator.py`) - Simulates charged particle motion in idealized fields
+2. **Electromagnetic Field Solver** (`em_solver.py`) - Computes B-fields from actual CAD geometry (STEP files)
 
 ## Theory
 
@@ -36,7 +40,10 @@ pip install -r requirements.txt
 
 ## Usage
 
-### Basic Simulation
+### Particle Trajectory Simulator
+
+Simulates charged particle motion in parametric magnetic fields:
+
 ```bash
 source magvid_env/bin/activate
 python simulator.py
@@ -47,12 +54,33 @@ For headless/server environments (no display):
 python simulator.py --no-display
 ```
 
-### Configuration
-Edit `config.ini` to match your experimental parameters:
+**Configuration:** Edit `config.ini` to set:
 - Field strengths and frequencies
-- Geometry dimensions  
+- Geometry dimensions
 - Particle properties
 - Output options
+
+### Electromagnetic Field Solver
+
+Computes magnetostatic fields from CAD geometry (STEP files):
+
+```bash
+source magvid_env/bin/activate
+python em_solver.py
+```
+
+**Input Requirements:**
+- STEP AP214 file with solid bodies (cores) and PRESENTATION_LAYER_ASSIGNMENT layers (windings)
+- Winding currents specified in code (e.g., "Winding0 = -500A")
+- Core relative permeability (μr)
+
+**Output:**
+- Interactive HTML file with 3D visualization
+- Color-mapped |B| magnitude
+- Magnetic field streamlines
+- Full pan/tilt/rotate/zoom controls in web browser
+
+**Example:** See `test_em_basic.py` for a quick validation
 
 ## Simulation Results
 
@@ -78,15 +106,21 @@ To correlate with physical build:
 
 ## Code Structure
 
-The simulator is organized into modular components:
-
+### Particle Trajectory Simulator
 - `simulator.py` - Main entry point and orchestration
 - `config.py` - Configuration management with validation
-- `physics.py` - Electromagnetic field calculations and particle dynamics
-- `visualization.py` - 3D plotting and field visualization
+- `physics.py` - Parametric field calculations and particle dynamics
+- `visualization.py` - Matplotlib-based 3D plotting
 - `config.ini` - Parameter configuration file
-- `requirements.txt` - Python dependencies
+
+### Electromagnetic Field Solver
+- `em_solver.py` - STEP file loading and magnetostatic field calculation
+- `test_em_basic.py` - Component validation and testing
+
+### Shared
+- `requirements.txt` - Python dependencies (NumPy, SciPy, Matplotlib, PyVista, CADQuery)
 - `setup.sh` - Installation script
+- `.gitignore` - Version control exclusions
 
 ### Error Handling
 
