@@ -1,3 +1,9 @@
+# MAGVID Electromagnetic Simulation Suite - Dependencies
+#
+# Windows users: If you encounter "DLL load failed while importing OCP" errors,
+# see WINDOWS_INSTALL.md for detailed troubleshooting.
+# TL;DR: Install Visual C++ Redistributable or use Conda instead of pip.
+#
 aiohappyeyeballs==2.6.1
 aiohttp==3.13.3
 aiosignal==1.4.0

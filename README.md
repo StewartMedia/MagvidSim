@@ -25,6 +25,8 @@ The interaction creates complex charged particle trajectories via the Lorentz fo
 
 ## Installation
 
+### Linux/macOS
+
 Run the setup script:
 ```bash
 cd ~/magvidsim
@@ -37,6 +39,40 @@ python3 -m venv magvid_env
 source magvid_env/bin/activate
 pip install -r requirements.txt
 ```
+
+### Windows
+
+**Important:** Windows installation requires special handling for CADQuery dependencies.
+
+```powershell
+# Create virtual environment
+python -m venv magvid_env
+.\magvid_env\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+**Windows Troubleshooting:**
+
+If you encounter the error `ImportError: DLL load failed while importing OCP`, this indicates a compatibility issue with the `cadquery-ocp` package on Windows. Try these solutions:
+
+1. **Install Microsoft Visual C++ Redistributable**:
+   - Download and install: https://aka.ms/vs/17/release/vc_redist.x64.exe
+   - This provides required DLL dependencies for OpenCascade
+
+2. **Use Conda instead of pip** (recommended for Windows):
+   ```powershell
+   conda create -n magvid_env python=3.9
+   conda activate magvid_env
+   conda install -c conda-forge -c cadquery cadquery
+   pip install -r requirements.txt
+   ```
+
+3. **Alternative: Use Docker** (most reliable cross-platform):
+   - See `WINDOWS_INSTALL.md` for detailed Docker setup instructions
+
+**Note:** The particle trajectory simulator (`simulator.py`) works on all platforms without CADQuery. Only the EM field solver (`em_solver.py`) requires CADQuery for STEP file processing.
 
 ## Usage
 
