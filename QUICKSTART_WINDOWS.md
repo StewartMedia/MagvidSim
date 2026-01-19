@@ -58,6 +58,18 @@ If you prefer to stick with pip:
    python em_solver.py
    ```
 
+## Python 3.13 Users
+
+If you're on Python 3.13, you may need to reinstall VTK/PyVista after installing requirements:
+
+```bash
+pip uninstall vtk pyvista trame trame-vtk trame-vuetify trame-client trame-server pooch scooby -y
+pip cache purge
+pip install --upgrade --force-reinstall vtk pyvista[all]
+```
+
+This fixes issues where packages try to use nonexistent OS library APIs.
+
 ## Still Having Issues?
 
 See `WINDOWS_INSTALL.md` for comprehensive troubleshooting, Docker setup, and more.

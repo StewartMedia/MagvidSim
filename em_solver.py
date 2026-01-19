@@ -42,11 +42,52 @@ class MagneticCore:
     faces: np.ndarray
     mu_r: float
 
+    def _ray_triangle_intersection(self, ray_origin, ray_dir, v0, v1, v2):
+        """Möller–Trumbore ray-triangle intersection algorithm."""
+        EPSILON = 1e-9
+
+        edge1 = v1 - v0
+        edge2 = v2 - v0
+        h = np.cross(ray_dir, edge2)
+        a = np.dot(edge1, h)
+
+        if abs(a) < EPSILON:
+            return False
+
+        f = 1.0 / a
+        s = ray_origin - v0
+        u = f * np.dot(s, h)
+
+        if u < 0.0 or u > 1.0:
+            return False
+
+        q = np.cross(s, edge1)
+        v = f * np.dot(ray_dir, q)
+
+        if v < 0.0 or u + v > 1.0:
+            return False
+
+        t = f * np.dot(edge2, q)
+        return t > EPSILON
+
     def contains_point(self, point: np.ndarray) -> bool:
-        """Check if point is inside core (simplified - uses bounding box)."""
-        mins = self.vertices.min(axis=0)
-        maxs = self.vertices.max(axis=0)
-        return np.all(point >= mins) and np.all(point <= maxs)
+        """Check if point is inside core using ray-casting (odd/even rule)."""
+        # Cast a ray from point in +X direction and count triangle intersections
+        ray_origin = point
+        ray_dir = np.array([1.0, 0.0, 0.0])
+
+        intersection_count = 0
+        for face in self.faces:
+            v0, v1, v2 = self.vertices[face]
+            if self._ray_triangle_intersection(ray_origin, ray_dir, v0, v1, v2):
+                intersection_count += 1
+
+        # Odd = inside, Even = outside
+        return intersection_count % 2 == 1
+
+    def contains_points(self, points: np.ndarray) -> np.ndarray:
+        """Vectorized version for multiple points."""
+        return np.array([self.contains_point(pt) for pt in points])
 
 
 class STEPLoader:
@@ -211,11 +252,26 @@ class MagnetostaticSolver:
         points = np.array(points)
         B_vectors = np.zeros_like(points)
 
-        print(f"\nCalculating B-field at {len(points)} points...")
-        for i, pt in enumerate(points):
-            if i % 500 == 0:
-                print(f"  Progress: {i}/{len(points)} ({100*i/len(points):.1f}%)")
-            B_vectors[i] = self.calculate_field(pt)
+        # Pre-filter points that are inside cores (vectorized)
+        inside_mask = np.zeros(len(points), dtype=bool)
+        for core in self.cores:
+            inside_mask |= core.contains_points(points)
+
+        points_outside = ~inside_mask
+        n_outside = points_outside.sum()
+
+        print(f"\nCalculating B-field at {n_outside}/{len(points)} points (excluding core interior)...")
+
+        # Only calculate field at points outside cores
+        calc_idx = 0
+        for i in range(len(points)):
+            if inside_mask[i]:
+                B_vectors[i] = np.array([np.nan, np.nan, np.nan])
+            else:
+                if calc_idx % 100 == 0:
+                    print(f"  Progress: {calc_idx}/{n_outside} ({100*calc_idx/n_outside:.1f}%)")
+                B_vectors[i] = self.calculate_field(points[i])
+                calc_idx += 1
 
         return points, B_vectors
 

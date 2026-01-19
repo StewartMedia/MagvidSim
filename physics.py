@@ -8,6 +8,7 @@ Handles electromagnetic field calculations and particle dynamics.
 
 import numpy as np
 from scipy.integrate import ode
+from symplectic_integrator import Yoshida4, BorisPusher
 
 
 class SimulationError(Exception):
@@ -176,18 +177,23 @@ class MAGVIDPhysics:
 
         return np.concatenate([vel, accel])
 
-    def simulate_particle(self, initial_pos, initial_vel, charge, mass):
+    def simulate_particle(self, initial_pos, initial_vel, charge, mass, use_symplectic=True):
         """
         Simulate single particle trajectory.
 
-        Uses Dormand-Prince 5th order Runge-Kutta method (dopri5)
-        with adaptive step size.
+        Uses symplectic integrator (Yoshida 4th order) by default for
+        energy conservation and long-time stability. Falls back to
+        Dormand-Prince RK5 if use_symplectic=False.
+
+        Symplectic integrators preserve Hamiltonian structure and avoid
+        energy drift that plagues Runge-Kutta methods in gyro-motion.
 
         Args:
             initial_pos: Initial position [x, y, z] [m]
             initial_vel: Initial velocity [vx, vy, vz] [m/s]
             charge: Particle charge [C]
             mass: Particle mass [kg]
+            use_symplectic: Use Yoshida 4th order (True) or RK5 (False)
 
         Returns:
             tuple: (t_points, trajectory) where
@@ -197,6 +203,86 @@ class MAGVIDPhysics:
         Raises:
             SimulationError: If integration fails
         """
+        if use_symplectic:
+            # Use Yoshida 4th-order symplectic integrator
+            return self._simulate_particle_symplectic(initial_pos, initial_vel, charge, mass)
+        else:
+            # Use traditional RK5 (for comparison/legacy)
+            return self._simulate_particle_rk5(initial_pos, initial_vel, charge, mass)
+
+    def _simulate_particle_symplectic(self, initial_pos, initial_vel, charge, mass):
+        """Simulate using Yoshida 4th-order symplectic integrator."""
+        integrator = Yoshida4(dt=self.config.dt)
+
+        # Force function for integrator
+        def force_at(r, v, t):
+            # Convert to cylindrical for field calculation
+            x, y, z = r
+            rho = np.sqrt(x**2 + y**2)
+            phi = np.arctan2(y, x)
+
+            # Get fields
+            Br, Bphi, Bz = self.magnetic_field(rho, phi, z, t)
+            Er, Ephi, Ez = self.electric_field(rho, phi, z, t)
+
+            # Convert to Cartesian
+            cos_phi = np.cos(phi)
+            sin_phi = np.sin(phi)
+
+            Bx = Br * cos_phi - Bphi * sin_phi
+            By = Br * sin_phi + Bphi * cos_phi
+            B = np.array([Bx, By, Bz])
+
+            Ex = Er * cos_phi - Ephi * sin_phi
+            Ey = Er * sin_phi + Ephi * cos_phi
+            E = np.array([Ex, Ey, Ez])
+
+            # Lorentz force: F = q(E + v × B)
+            return charge * (E + np.cross(v, B))
+
+        # Storage
+        t_points = [0.0]
+        positions = [initial_pos.copy()]
+        velocities = [initial_vel.copy()]
+
+        r = initial_pos.copy()
+        v = initial_vel.copy()
+        t = 0.0
+
+        # Integrate
+        try:
+            n_steps = int(self.config.t_max / self.config.dt)
+            for step in range(n_steps):
+                r, v = integrator.step(r, v, t, force_at, mass)
+                t += self.config.dt
+
+                t_points.append(t)
+                positions.append(r.copy())
+                velocities.append(v.copy())
+
+                # Check for numerical overflow
+                if not (np.all(np.isfinite(r)) and np.all(np.isfinite(v))):
+                    raise SimulationError(
+                        f"Integration diverged at t={t:.2e}s. "
+                        "Particle trajectory became non-finite. "
+                        "Try reducing time step or field strengths."
+                    )
+
+        except Exception as e:
+            if isinstance(e, SimulationError):
+                raise
+            raise SimulationError(f"Symplectic integration failed: {e}")
+
+        # Combine position and velocity into trajectory
+        trajectory = np.column_stack([
+            np.array(positions),
+            np.array(velocities)
+        ])
+
+        return np.array(t_points), trajectory
+
+    def _simulate_particle_rk5(self, initial_pos, initial_vel, charge, mass):
+        """Legacy RK5 integration (deprecated - use symplectic instead)."""
         # Initial conditions
         y0 = np.concatenate([initial_pos, initial_vel])
 

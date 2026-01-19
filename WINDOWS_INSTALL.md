@@ -171,8 +171,21 @@ Should generate `magvid_field_visualization.html` with 3D field visualization.
 | 3.8 | Not tested | May work but not recommended |
 | 3.9 | ✅ Recommended | Best tested compatibility |
 | 3.10 | ✅ Supported | Known to work |
-| 3.11 | ⚠️ Limited | CADQuery may have issues |
-| 3.12+ | ❌ Not supported | CADQuery not yet compatible |
+| 3.11 | ✅ Supported | Known to work |
+| 3.12 | ✅ Supported | Tested on macOS |
+| 3.13 | ✅ Works | Confirmed working on Windows (requires VTK/PyVista reinstall, see below) |
+
+### Python 3.13 Specific Issues
+
+If using Python 3.13, you may need to reinstall VTK and PyVista packages:
+
+```powershell
+pip uninstall vtk pyvista trame trame-vtk trame-vuetify trame-client trame-server pooch scooby -y
+pip cache purge
+pip install --upgrade --force-reinstall vtk pyvista[all]
+```
+
+**Note**: Some packages call nonexistent OS library APIs in Python 3.13. The reinstall process ensures compatible binary versions are installed.
 
 ## Getting Help
 
