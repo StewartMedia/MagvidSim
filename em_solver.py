@@ -42,6 +42,40 @@ class MagneticCore:
     faces: np.ndarray
     mu_r: float
 
+    def extract_surface_region(self, winding_bounds: np.ndarray, margin: float = 0.001) -> tuple:
+        """Extract core surface faces within winding bounding box.
+
+        Args:
+            winding_bounds: 2x3 array [[x_min, y_min, z_min], [x_max, y_max, z_max]]
+            margin: Margin to add to bounds (meters)
+
+        Returns:
+            (vertices, faces) - the subset of core surface in the bounded region
+        """
+        # Expand bounds by margin
+        bounds_min = winding_bounds[0] - margin
+        bounds_max = winding_bounds[1] + margin
+
+        # Vectorized computation of face centroids
+        # Get all vertices for all faces at once
+        v0 = self.vertices[self.faces[:, 0]]
+        v1 = self.vertices[self.faces[:, 1]]
+        v2 = self.vertices[self.faces[:, 2]]
+
+        # Compute all centroids at once
+        centroids = (v0 + v1 + v2) / 3.0
+
+        # Check which centroids are within bounds (vectorized)
+        in_bounds = np.all((centroids >= bounds_min) & (centroids <= bounds_max), axis=1)
+
+        # Select faces where centroid is in bounds
+        faces_in_region = self.faces[in_bounds]
+
+        print(f"  Extracted {len(faces_in_region)}/{len(self.faces)} core faces "
+              f"in winding region", flush=True)
+
+        return self.vertices, faces_in_region
+
     def _ray_triangle_intersection(self, ray_origin, ray_dir, v0, v1, v2):
         """Möller–Trumbore ray-triangle intersection algorithm."""
         EPSILON = 1e-9
@@ -97,6 +131,7 @@ class STEPLoader:
         self.filepath = filepath
         self.shape = None
         self.winding_layers = {}
+        self.step_entities = {}
 
     def load(self):
         """Load STEP file."""
@@ -104,10 +139,51 @@ class STEPLoader:
         try:
             self.shape = cq.importers.importStep(self.filepath)
             print(f"  Successfully loaded STEP file")
+            self._parse_step_entities()
             return True
         except Exception as e:
             print(f"  Error loading STEP: {e}")
             return False
+
+    def _parse_step_entities(self):
+        """Parse STEP file to identify shells and layer assignments."""
+        with open(self.filepath, 'r') as f:
+            content = f.read()
+
+        # Find CLOSED_SHELL (solid core) and OPEN_SHELL (winding surfaces)
+        closed_shell_pattern = r'#(\d+)\s*=\s*CLOSED_SHELL\s*\(\s*\'[^\']*\'\s*,\s*\(([^)]+)\)'
+        open_shell_pattern = r'#(\d+)\s*=\s*OPEN_SHELL\s*\(\s*\'[^\']*\'\s*,\s*\(([^)]+)\)'
+
+        self.step_entities['closed_shells'] = []
+        self.step_entities['open_shells'] = []
+
+        # Find closed shells (core)
+        for match in re.finditer(closed_shell_pattern, content):
+            shell_id = int(match.group(1))
+            # Parse face references, handling spaces and # symbols
+            face_refs_str = match.group(2).replace(' ', '')  # Remove spaces
+            face_refs = [int(x.strip('#')) for x in face_refs_str.split(',') if x.strip()]
+            self.step_entities['closed_shells'].append((shell_id, face_refs))
+            print(f"  Found CLOSED_SHELL #{shell_id} with {len(face_refs)} faces (core)")
+
+        # Find open shells (windings)
+        for match in re.finditer(open_shell_pattern, content):
+            shell_id = int(match.group(1))
+            # Parse face references, handling spaces and # symbols
+            face_refs_str = match.group(2).replace(' ', '')  # Remove spaces
+            face_refs = [int(x.strip('#')) for x in face_refs_str.split(',') if x.strip()]
+            self.step_entities['open_shells'].append((shell_id, face_refs))
+            print(f"  Found OPEN_SHELL #{shell_id} with {len(face_refs)} faces (winding)")
+
+        # Find layer assignments for open shells
+        layer_pattern = r'PRESENTATION_LAYER_ASSIGNMENT\s*\(\s*\'(Winding\d+)\'\s*,\s*\'[^\']*\'\s*,\s*\(\s*#(\d+)\s*\)'
+        self.step_entities['layer_assignments'] = {}
+
+        for match in re.finditer(layer_pattern, content):
+            winding_name = match.group(1)
+            styled_item_id = int(match.group(2))
+            self.step_entities['layer_assignments'][styled_item_id] = winding_name
+            print(f"  Layer assignment: {winding_name} -> STYLED_ITEM #{styled_item_id}")
 
     def extract_winding_layers_from_step_text(self) -> dict:
         """Parse STEP file text to find winding layer assignments."""
@@ -128,39 +204,98 @@ class STEPLoader:
         print(f"  Found {len(windings)} winding layers: {list(windings.keys())}")
         return windings
 
-    def tessellate_shape(self) -> Tuple[np.ndarray, np.ndarray]:
-        """Convert CADQuery shape to triangular mesh."""
-        # Export to tessellation
-        vertices = []
-        faces = []
+    def tessellate_shape(self, shell_type='all') -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Convert CADQuery shape to triangular mesh.
 
-        # Get faces from the solid
-        if hasattr(self.shape, 'val'):
-            shape_val = self.shape.val()
-        else:
-            shape_val = self.shape
-
-        # Use CADQuery's mesh export
-        # Export as STL string then parse
+        Args:
+            shell_type: 'all' (default), 'closed' (core only), or 'open' (windings only)
+        """
         try:
             import tempfile
+            import trimesh
+            import os
+
             with tempfile.NamedTemporaryFile(suffix='.stl', delete=False) as tmp:
                 tmp_name = tmp.name
 
             cq.exporters.export(self.shape, tmp_name)
-
-            # Load with trimesh
-            import trimesh
             mesh = trimesh.load(tmp_name)
-
-            import os
             os.unlink(tmp_name)
 
-            return mesh.vertices * 0.001, mesh.faces  # Convert mm to m
+            # Convert mm to m
+            mesh.vertices *= 0.001
+
+            return mesh.vertices, mesh.faces
 
         except Exception as e:
             print(f"  Warning: Tessellation error: {e}")
             return np.array([]), np.array([])
+
+    def separate_components(self) -> dict:
+        """
+        Separate mesh into connected components (core and windings).
+
+        Returns dict with 'core' and 'winding' meshes.
+        """
+        try:
+            import tempfile
+            import trimesh
+            import os
+
+            with tempfile.NamedTemporaryFile(suffix='.stl', delete=False) as tmp:
+                tmp_name = tmp.name
+
+            cq.exporters.export(self.shape, tmp_name)
+            mesh = trimesh.load(tmp_name)
+            os.unlink(tmp_name)
+
+            # Convert mm to m
+            mesh.vertices *= 0.001
+
+            # Split into connected components
+            components = mesh.split(only_watertight=False)
+            print(f"\n  Mesh split into {len(components)} connected components:")
+
+            result = {}
+
+            for i, comp in enumerate(components):
+                n_faces = len(comp.faces)
+                is_watertight = comp.is_watertight
+                volume = comp.volume if is_watertight else 0
+
+                print(f"    Component {i}: {n_faces} faces, "
+                      f"watertight={is_watertight}, volume={volume:.6f} m³")
+
+                # Heuristic: largest watertight component is the core
+                # Smaller non-watertight components are winding surfaces
+                if is_watertight and volume > 0:
+                    if 'core' not in result or volume > result['core'].volume:
+                        result['core'] = comp
+                else:
+                    # Winding surfaces (open shells)
+                    if 'winding' not in result:
+                        result['winding'] = comp
+                    else:
+                        # Merge winding components
+                        result['winding'] = trimesh.util.concatenate([result['winding'], comp])
+
+            # Ensure we have both components
+            if 'core' not in result:
+                print("    WARNING: No watertight core found!")
+                # Use largest component as core
+                result['core'] = max(components, key=lambda c: len(c.faces))
+
+            if 'winding' not in result:
+                print("    WARNING: No winding surfaces found!")
+                # Use smallest component as winding
+                result['winding'] = min(components, key=lambda c: len(c.faces))
+
+            return result
+
+        except Exception as e:
+            print(f"  Error separating components: {e}")
+            return {}
 
 
 class MagnetostaticSolver:
@@ -255,7 +390,9 @@ class MagnetostaticSolver:
         # Pre-filter points that are inside cores (vectorized)
         inside_mask = np.zeros(len(points), dtype=bool)
         for core in self.cores:
-            inside_mask |= core.contains_points(points)
+            core_inside = core.contains_points(points)
+            print(f"  Core detection: {core_inside.sum()}/{len(points)} points inside core")
+            inside_mask |= core_inside
 
         points_outside = ~inside_mask
         n_outside = points_outside.sum()
@@ -287,8 +424,9 @@ class FieldVisualizer:
         """Add core geometry."""
         faces_pv = np.hstack([[3] + list(f) for f in core.faces])
         mesh = pv.PolyData(core.vertices, faces_pv)
-        self.plotter.add_mesh(mesh, color='lightgray', opacity=0.4,
-                            label=f'Core (μr={core.mu_r})')
+        print(f"  Adding core: {len(core.vertices)} vertices, {len(core.faces)} faces")
+        self.plotter.add_mesh(mesh, color='gray', opacity=0.6,
+                            label=f'Core (μr={core.mu_r})', show_edges=True)
 
     def add_winding(self, winding: CurrentSheet):
         """Add winding geometry."""
@@ -298,26 +436,35 @@ class FieldVisualizer:
                             label=f'{winding.name} ({winding.current}A)')
 
     def add_field_magnitude(self, points: np.ndarray, B_vectors: np.ndarray):
-        """Add volumetric field magnitude with color map."""
+        """Add field vectors with arrows colored by magnitude."""
         B_mag = np.linalg.norm(B_vectors, axis=1)
 
         # Filter out NaN (inside cores)
         valid = ~np.isnan(B_mag)
         valid_points = points[valid]
+        valid_vectors = B_vectors[valid]
         valid_mag = B_mag[valid]
 
         if len(valid_points) == 0:
             print("Warning: No valid field points")
             return
 
-        # Create point cloud
+        # Normalize vectors for consistent arrow size
+        # Scale by log of magnitude to handle large range
+        scale_factor = 0.0001  # meters (0.1mm arrows)
+        normalized = valid_vectors / (valid_mag[:, np.newaxis] + 1e-10)
+        scaled_vectors = normalized * scale_factor * np.log10(valid_mag[:, np.newaxis] / valid_mag.min() + 1)
+
+        # Create arrow glyphs
         cloud = pv.PolyData(valid_points)
+        cloud['vectors'] = scaled_vectors
         cloud['|B|'] = valid_mag
 
-        # Add with color mapping
-        self.plotter.add_mesh(cloud, scalars='|B|', cmap='viridis',
-                            point_size=10, render_points_as_spheres=True,
-                            scalar_bar_args={'title': '|B| (Tesla)'})
+        # Add arrows
+        arrows = cloud.glyph(orient='vectors', scale=False, factor=1.0)
+        self.plotter.add_mesh(arrows, scalars='|B|', cmap='viridis',
+                            scalar_bar_args={'title': '|B| (Tesla)'},
+                            label='B-field')
 
     def add_streamlines(self, points: np.ndarray, B_vectors: np.ndarray,
                        n_lines: int = 30):
@@ -381,86 +528,132 @@ class FieldVisualizer:
 
 
 def main():
-    print("="*70)
-    print("MAGVID Electromagnetic Field Solver")
-    print("="*70)
+    import sys
+    print("="*70, flush=True)
+    print("MAGVID Electromagnetic Field Solver", flush=True)
+    print("="*70, flush=True)
+    sys.stdout.flush()
 
     # Configuration
     step_file = "out.STEP"
     winding_currents = {"Winding0": -500.0}
     core_mu_r = 5000.0
-    field_resolution = 8  # Reduced for faster computation (8³ = 512 points)
+    field_resolution = 8  # Grid resolution (8³ = 512 points)
 
-    print(f"\nConfiguration:")
-    print(f"  STEP file: {step_file}")
-    print(f"  Core μr: {core_mu_r}")
-    print(f"  Winding currents: {winding_currents}")
-    print(f"  Grid resolution: {field_resolution}³ points")
+    print(f"\nConfiguration:", flush=True)
+    print(f"  STEP file: {step_file}", flush=True)
+    print(f"  Core μr: {core_mu_r}", flush=True)
+    print(f"  Winding currents: {winding_currents}", flush=True)
+    print(f"  Grid resolution: {field_resolution}³ points", flush=True)
+    sys.stdout.flush()
 
     # Load STEP file
-    print("\n" + "-"*70)
+    print("\n" + "-"*70, flush=True)
+    sys.stdout.flush()
     loader = STEPLoader(step_file)
     if not loader.load():
-        print("ERROR: Failed to load STEP file")
+        print("ERROR: Failed to load STEP file", flush=True)
         return
 
-    # Extract geometry
-    print("\nExtracting geometry...")
-    vertices, faces = loader.tessellate_shape()
+    # Extract and separate geometry into core and windings
+    print("\nSeparating geometry into components...", flush=True)
+    sys.stdout.flush()
+    components = loader.separate_components()
 
-    if len(vertices) == 0:
-        print("ERROR: No geometry extracted")
+    if not components:
+        print("ERROR: Failed to separate geometry", flush=True)
         return
 
-    print(f"  Extracted mesh: {len(vertices)} vertices, {len(faces)} faces")
+    # Extract core mesh
+    print("Extracting core mesh...", flush=True)
+    sys.stdout.flush()
+    core_mesh = components['core']
+    core_vertices = core_mesh.vertices
+    core_faces = core_mesh.faces
 
-    # Aggressive subsampling for practical computation time
-    if len(faces) > 500:
-        print(f"  Subsampling mesh for practical computation time...")
-        # Target ~200-500 faces for reasonable speed
-        target_faces = min(300, len(faces))
-        step = max(1, len(faces) // target_faces)
-        faces = faces[::step]
-        print(f"  Subsampled to: {len(vertices)} vertices, {len(faces)} faces")
-        print(f"  (Reduced from 43K faces - computation now feasible)")
+    print(f"\nCore geometry: {len(core_vertices)} vertices, {len(core_faces)} faces", flush=True)
+    sys.stdout.flush()
 
-    # Create core
-    core = MagneticCore(vertices=vertices, faces=faces, mu_r=core_mu_r)
+    # Create core with FULL mesh (needed for accurate point-in-core detection)
+    # IMPORTANT: Don't subsample core faces - ray-casting needs watertight mesh!
+    core = MagneticCore(vertices=core_vertices, faces=core_faces, mu_r=core_mu_r)
 
-    # Parse windings from STEP text
-    winding_layers = loader.extract_winding_layers_from_step_text()
+    # Create subsampled version for visualization only
+    core_faces_viz = core_faces
+    if len(core_faces) > 500:
+        print(f"  Creating subsampled version for visualization...")
+        target_faces = min(300, len(core_faces))
+        step = max(1, len(core_faces) // target_faces)
+        core_faces_viz = core_faces[::step]
+        print(f"  Visualization mesh: {len(core_vertices)} vertices, {len(core_faces_viz)} faces")
 
-    # For demonstration, use subset of mesh as winding
-    # (Full implementation would extract specific faces by layer)
-    print("\nCreating winding current sheets...")
+    # Extract winding mesh to get bounds
+    winding_mesh = components['winding']
+    winding_bounds = winding_mesh.bounds
+
+    print(f"\nWinding bounds:")
+    print(f"  X: [{winding_bounds[0,0]:.4f}, {winding_bounds[1,0]:.4f}]")
+    print(f"  Y: [{winding_bounds[0,1]:.4f}, {winding_bounds[1,1]:.4f}]")
+    print(f"  Z: [{winding_bounds[0,2]:.4f}, {winding_bounds[1,2]:.4f}]")
+
+    # Extract core surface in winding region
+    print("\nExtracting core surface in winding region...")
+    winding_vertices, winding_faces = core.extract_surface_region(
+        winding_bounds=winding_bounds,
+        margin=0.002  # 2mm margin
+    )
+
+    # Subsample winding faces for speed (field calc is O(n_points × n_faces))
+    if len(winding_faces) > 100:
+        print(f"  Subsampling winding surface for practical computation time...", flush=True)
+        sys.stdout.flush()
+        # Target ~50-100 faces for reasonable speed
+        target_faces = min(100, len(winding_faces))
+        step = max(1, len(winding_faces) // target_faces)
+        winding_faces = winding_faces[::step]
+        print(f"  Subsampled to: {len(winding_faces)} faces", flush=True)
+        sys.stdout.flush()
+
+    # Create winding current sheets using core surface
+    print("\nCreating winding current sheets from core surface...", flush=True)
+    sys.stdout.flush()
     windings = []
     for winding_name, current in winding_currents.items():
-        # Use outer surface faces as winding approximation
+        print(f"  Creating {winding_name}...", flush=True)
+        sys.stdout.flush()
         winding = CurrentSheet(
             name=winding_name,
-            vertices=vertices,
-            faces=faces[:len(faces)//4],  # Use subset
+            vertices=winding_vertices,
+            faces=winding_faces,
             current=current
         )
         windings.append(winding)
-        print(f"  {winding_name}: {current}A, area={winding.area:.6f} m²")
+        print(f"  {winding_name}: {current}A, area={winding.area:.6f} m²", flush=True)
+        sys.stdout.flush()
 
-    # Calculate bounds for field grid
-    mins = vertices.min(axis=0)
-    maxs = vertices.max(axis=0)
-    margin = 0.05  # 5cm margin
+    # Calculate bounds for field grid (use core bounds with small margin)
+    print("\nCalculating field grid bounds...", flush=True)
+    sys.stdout.flush()
+    mins = core_vertices.min(axis=0)
+    maxs = core_vertices.max(axis=0)
+    margin = 0.015  # 1.5cm margin for tighter visualization focus
     bounds = np.array([[mins[0]-margin, maxs[0]+margin],
                       [mins[1]-margin, maxs[1]+margin],
                       [mins[2]-margin, maxs[2]+margin]])
 
-    print(f"\nField calculation bounds:")
-    print(f"  X: [{bounds[0,0]:.3f}, {bounds[0,1]:.3f}] m")
-    print(f"  Y: [{bounds[1,0]:.3f}, {bounds[1,1]:.3f}] m")
-    print(f"  Z: [{bounds[2,0]:.3f}, {bounds[2,1]:.3f}] m")
+    print(f"\nField calculation bounds:", flush=True)
+    print(f"  X: [{bounds[0,0]:.3f}, {bounds[0,1]:.3f}] m", flush=True)
+    print(f"  Y: [{bounds[1,0]:.3f}, {bounds[1,1]:.3f}] m", flush=True)
+    print(f"  Z: [{bounds[2,0]:.3f}, {bounds[2,1]:.3f}] m", flush=True)
+    sys.stdout.flush()
 
     # Solve fields
-    print("\n" + "-"*70)
+    print("\n" + "-"*70, flush=True)
+    print("Creating solver...", flush=True)
+    sys.stdout.flush()
     solver = MagnetostaticSolver(cores=[core], windings=windings)
+    print("Calculating field grid...", flush=True)
+    sys.stdout.flush()
     points, B_vectors = solver.calculate_grid(bounds, resolution=field_resolution)
 
     # Statistics
@@ -475,8 +668,12 @@ def main():
     # Visualize
     print("\n" + "-"*70)
     print("Creating visualization...")
+
+    # Create visualization-only core with subsampled mesh
+    core_viz = MagneticCore(vertices=core_vertices, faces=core_faces_viz, mu_r=core_mu_r)
+
     viz = FieldVisualizer()
-    viz.add_core(core)
+    viz.add_core(core_viz)
     for winding in windings:
         viz.add_winding(winding)
     viz.add_field_magnitude(points, B_vectors)
